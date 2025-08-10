@@ -1,3 +1,3 @@
-"""Telegram Solana monitoring bot package."""
+# Telegram Solana Bot Package
 
 

@@ -1,66 +1,77 @@
-from typing import Optional
 import aiohttp
+import logging
+import json
+from typing import Optional, Dict, Any
 
-
-_STABLE_MINTS = {
-    # USDC
-    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 1.0,
-    # USDT
-    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 1.0,
-}
-
+logger = logging.getLogger(__name__)
 
 class PriceClient:
-    def __init__(self, manual_store=None) -> None:
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._manual_store = manual_store
+    def __init__(self, manual_price_store):
+        self.manual_price_store = manual_price_store
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.jupiter_url = "https://price.jup.ag/v4/price"
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=20)
-            self._session = aiohttp.ClientSession(timeout=timeout)
-        return self._session
+    async def __aenter__(self):
+        await self._ensure_session()
+        return self
 
-    async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
 
-    async def get_usd_price(self, mint_or_symbol: str) -> Optional[float]:
-        # Stablecoins shortcut
-        if mint_or_symbol in _STABLE_MINTS:
-            return _STABLE_MINTS[mint_or_symbol]
+    async def _ensure_session(self):
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
 
-        # Map wSOL mint to symbol SOL
-        if mint_or_symbol == "So11111111111111111111111111111111111111112":
-            ids = "SOL"
-        elif mint_or_symbol.upper() == "SOL":
-            ids = "SOL"
-        else:
-            ids = mint_or_symbol
+    async def close(self):
+        if self.session:
+            await self.session.close()
+            self.session = None
 
-        # 1) Jupiter price API first
-        url = f"https://price.jup.ag/v6/price?ids={ids}"
-        session = await self._get_session()
+    async def get_usd_price(self, mint: str) -> Optional[float]:
+        """Get USD price for a token mint address or symbol."""
         try:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    raise Exception("jup price http status")
-                data = await resp.json()
-                price_obj = (data.get("data", {}) or {}).get(ids)
-                if not price_obj:
-                    raise Exception("jup price empty")
-                price = price_obj.get("price")
-                try:
-                    return float(price)
-                except Exception:
-                    raise
-        except Exception:
-            # 2) Manual store fallback
-            if self._manual_store is not None:
-                mp = self._manual_store.get_price_usd(mint_or_symbol)
-                if mp is not None:
-                    return mp
-            # 3) No price available
+            # Try Jupiter first
+            jupiter_price = await self._get_jupiter_price(mint)
+            if jupiter_price is not None:
+                logger.info(f"Got Jupiter price for {mint}: ${jupiter_price}")
+                return jupiter_price
+
+            # Try manual prices
+            manual_price = self.manual_price_store.get_price(mint)
+            if manual_price is not None:
+                logger.info(f"Got manual price for {mint}: ${manual_price}")
+                return manual_price
+
+            # No price available
+            logger.warning(f"No price available for {mint}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error getting price for {mint}: {e}")
+            return None
+
+    async def _get_jupiter_price(self, mint: str) -> Optional[float]:
+        """Get price from Jupiter API."""
+        try:
+            await self._ensure_session()
+            
+            params = {"ids": mint}
+            async with self.session.get(self.jupiter_url, params=params, timeout=10) as response:
+                if response.status != 200:
+                    logger.warning(f"Jupiter API returned {response.status}")
+                    return None
+                
+                data = await response.json()
+                if "data" in data and mint in data["data"]:
+                    return float(data["data"][mint]["price"])
+                
+                return None
+                
+        except asyncio.TimeoutError:
+            logger.warning(f"Jupiter API timeout for {mint}")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching Jupiter price for {mint}: {e}")
             return None
 
 

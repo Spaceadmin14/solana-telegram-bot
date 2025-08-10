@@ -1,35 +1,86 @@
 import json
+import logging
 import os
 from typing import Dict, Optional
 
+logger = logging.getLogger(__name__)
 
 class ManualPriceStore:
-    def __init__(self, file_path: str) -> None:
-        self._file_path = file_path
-        self._prices: Dict[str, float] = {}
-        self._load()
+    def __init__(self, file_path: str):
+        self.file_path = file_path
+        self.prices: Dict[str, float] = {}
+        self._ensure_directory()
+        self.refresh()
 
-    def _load(self) -> None:
+    def _ensure_directory(self):
+        """Ensure the directory for the price file exists."""
+        directory = os.path.dirname(self.file_path)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
+
+    def refresh(self):
+        """Load prices from the JSON file."""
         try:
-            if os.path.exists(self._file_path):
-                with open(self._file_path, "r", encoding="utf-8") as f:
+            if os.path.exists(self.file_path):
+                with open(self.file_path, 'r') as f:
                     data = json.load(f)
-                # Normalize keys to upper-case symbols and known mints
-                self._prices = {str(k).upper(): float(v) for k, v in data.items() if isinstance(v, (int, float))}
-        except Exception:
-            self._prices = {}
+                    self.prices = data
+                logger.info(f"Loaded {len(self.prices)} manual prices from {self.file_path}")
+            else:
+                logger.info(f"Manual price file not found: {self.file_path}")
+                self.prices = {}
+        except Exception as e:
+            logger.error(f"Error loading manual prices: {e}")
+            self.prices = {}
 
-    def refresh(self) -> None:
-        self._load()
+    def get_price(self, mint_or_symbol: str) -> Optional[float]:
+        """Get price for a mint address or symbol."""
+        # Direct match
+        if mint_or_symbol in self.prices:
+            return self.prices[mint_or_symbol]
+        
+        # Try uppercase symbol
+        if mint_or_symbol.upper() in self.prices:
+            return self.prices[mint_or_symbol.upper()]
+        
+        # Try lowercase symbol
+        if mint_or_symbol.lower() in self.prices:
+            return self.prices[mint_or_symbol.lower()]
+        
+        return None
 
-    def get_price_usd(self, symbol_or_mint: str) -> Optional[float]:
-        # Support both symbols (SOL/USDC/USDT/...) and full mint strings.
-        key = symbol_or_mint.upper()
-        if key in self._prices:
-            return self._prices[key]
-        # Try mapping WSOL mint to SOL
-        if symbol_or_mint == "So11111111111111111111111111111111111111112":
-            return self._prices.get("SOL")
-        return self._prices.get(symbol_or_mint)
+    def set_price(self, mint_or_symbol: str, price: float) -> bool:
+        """Set price for a mint address or symbol."""
+        try:
+            self.prices[mint_or_symbol] = price
+            self._save_prices()
+            logger.info(f"Set price for {mint_or_symbol}: ${price}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting price for {mint_or_symbol}: {e}")
+            return False
+
+    def _save_prices(self):
+        """Save prices to the JSON file."""
+        try:
+            with open(self.file_path, 'w') as f:
+                json.dump(self.prices, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving manual prices: {e}")
+
+    def get_all_prices(self) -> Dict[str, float]:
+        """Get all manual prices."""
+        return self.prices.copy()
+
+    def clear_prices(self) -> bool:
+        """Clear all manual prices."""
+        try:
+            self.prices = {}
+            self._save_prices()
+            logger.info("Cleared all manual prices")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing manual prices: {e}")
+            return False
 
 

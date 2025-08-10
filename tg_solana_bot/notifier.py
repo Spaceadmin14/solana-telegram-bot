@@ -1,70 +1,117 @@
-from typing import Optional, List
 import aiohttp
-import asyncio
+import logging
 import os
+from typing import Optional, List
 
+logger = logging.getLogger(__name__)
 
 class TelegramNotifier:
-    def __init__(self, bot_token: str, chat_id: str, chat_ids: Optional[List[str]] = None) -> None:
-        self._bot_token = bot_token
-        self._chat_id = chat_id
-        self._chat_ids = chat_ids or ([chat_id] if chat_id else [])
-        self._base = f"https://api.telegram.org/bot{bot_token}"
-        self._session: Optional[aiohttp.ClientSession] = None
+    def __init__(self, bot_token: str, chat_id: str, chat_ids: Optional[List[str]] = None):
+        self.bot_token = bot_token
+        self.chat_id = chat_id
+        self.chat_ids = chat_ids or [chat_id] if chat_id else []
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.base_url = f"https://api.telegram.org/bot{bot_token}"
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=30)
-            self._session = aiohttp.ClientSession(timeout=timeout)
-        return self._session
+    async def __aenter__(self):
+        await self._ensure_session()
+        return self
 
-    async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
 
-    async def send_text(self, text: str, disable_web_page_preview: bool = True) -> None:
-        session = await self._get_session()
-        url = f"{self._base}/sendMessage"
-        for cid in self._chat_ids:
-            payload = {
-                "chat_id": cid,
-                "text": text,
-                "disable_web_page_preview": disable_web_page_preview,
-                "parse_mode": "HTML",
-            }
-            async with session.post(url, json=payload) as resp:
-                await resp.text()
+    async def _ensure_session(self):
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
 
-    async def send_media(self, media_url: str, caption: str = "", media_type: str = "photo") -> None:
-        if not media_url:
-            await self.send_text(caption)
-            return
-        session = await self._get_session()
-        for cid in self._chat_ids:
-            endpoint = "sendPhoto" if media_type == "photo" else (
-                "sendAnimation" if media_type == "animation" else "sendVideo"
-            )
-            url = f"{self._base}/{endpoint}"
-            # If media_url points to a local file path, upload the file; otherwise pass the URL
-            if os.path.isfile(media_url):
-                form = aiohttp.FormData()
-                form.add_field("chat_id", str(cid))
-                field_name = "photo" if media_type == "photo" else ("animation" if media_type == "animation" else "video")
-                with open(media_url, "rb") as f:
-                    form.add_field(field_name, f, filename=os.path.basename(media_url), content_type="application/octet-stream")
-                    if caption:
-                        form.add_field("caption", caption)
-                    async with session.post(url, data=form) as resp:
-                        await resp.text()
-            else:
-                # Assume it's a URL
-                if media_type == "photo":
-                    payload = {"chat_id": cid, "photo": media_url, "caption": caption}
-                elif media_type == "animation":
-                    payload = {"chat_id": cid, "animation": media_url, "caption": caption}
+    async def close(self):
+        if self.session:
+            await self.session.close()
+            self.session = None
+
+    async def send_message(self, text: str) -> bool:
+        """Send a text message to all configured chat IDs."""
+        await self._ensure_session()
+        
+        success = True
+        for chat_id in self.chat_ids:
+            try:
+                payload = {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML"
+                }
+                
+                async with self.session.post(f"{self.base_url}/sendMessage", json=payload, timeout=30) as response:
+                    if response.status != 200:
+                        logger.error(f"Failed to send message to {chat_id}: {response.status}")
+                        success = False
+                    else:
+                        logger.info(f"Message sent successfully to {chat_id}")
+                        
+            except Exception as e:
+                logger.error(f"Error sending message to {chat_id}: {e}")
+                success = False
+                
+        return success
+
+    async def send_media(self, media_url: str, caption: str = "", media_type: str = "photo") -> bool:
+        """Send media (photo, video, etc.) with caption to all configured chat IDs."""
+        await self._ensure_session()
+        
+        success = True
+        for chat_id in self.chat_ids:
+            try:
+                # Check if it's a local file
+                if os.path.exists(media_url):
+                    # Local file - use sendDocument or sendPhoto
+                    with open(media_url, 'rb') as file:
+                        files = {'document': file} if media_type == "document" else {'photo': file}
+                        data = {
+                            "chat_id": chat_id,
+                            "caption": caption,
+                            "parse_mode": "HTML"
+                        }
+                        
+                        async with self.session.post(f"{self.base_url}/sendDocument" if media_type == "document" else f"{self.base_url}/sendPhoto", 
+                                                   data=data, files=files, timeout=30) as response:
+                            if response.status != 200:
+                                logger.error(f"Failed to send local media to {chat_id}: {response.status}")
+                                success = False
+                            else:
+                                logger.info(f"Local media sent successfully to {chat_id}")
                 else:
-                    payload = {"chat_id": cid, "video": media_url, "caption": caption}
-                async with session.post(url, data=payload) as resp:
-                    await resp.text()
+                    # Remote URL
+                    payload = {
+                        "chat_id": chat_id,
+                        "caption": caption,
+                        "parse_mode": "HTML"
+                    }
+                    
+                    if media_type == "photo":
+                        payload["photo"] = media_url
+                        endpoint = "/sendPhoto"
+                    elif media_type == "video":
+                        payload["video"] = media_url
+                        endpoint = "/sendVideo"
+                    elif media_type == "animation":
+                        payload["animation"] = media_url
+                        endpoint = "/sendAnimation"
+                    else:
+                        payload["document"] = media_url
+                        endpoint = "/sendDocument"
+                    
+                    async with self.session.post(f"{self.base_url}{endpoint}", json=payload, timeout=30) as response:
+                        if response.status != 200:
+                            logger.error(f"Failed to send remote media to {chat_id}: {response.status}")
+                            success = False
+                        else:
+                            logger.info(f"Remote media sent successfully to {chat_id}")
+                            
+            except Exception as e:
+                logger.error(f"Error sending media to {chat_id}: {e}")
+                success = False
+                
+        return success
 
 

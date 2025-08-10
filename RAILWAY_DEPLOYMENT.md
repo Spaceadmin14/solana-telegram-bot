@@ -36,6 +36,8 @@ BURN_INCINERATOR_ADDRESS=11111111111111111111111111111112
 POLL_INTERVAL_SECONDS=30
 STATE_FILE_PATH=/app/data/state.json
 MANUAL_PRICE_FILE_PATH=/app/data/manual_prices.json
+NOTIFY_FEE_MEDIA_URL=/app/media/swap_alert.jpg
+NOTIFY_BURN_MEDIA_URL=/app/media/swap_alert.jpg
 ```
 
 ### 4. Déployer
