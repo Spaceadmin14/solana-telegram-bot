@@ -29,16 +29,37 @@ class Settings:
 def load_settings() -> Settings:
     chat_id = _get_env("TELEGRAM_CHAT_ID")
     chat_ids_env = _get_env("TELEGRAM_CHAT_IDS")
+    
+    # Support for multiple chat IDs from separate variables
     chat_ids: List[str] = []
+    
+    # Add main chat ID
+    if chat_id:
+        chat_ids.append(chat_id)
+    
+    # Add additional chat IDs from TELEGRAM_CHAT_IDS
     if chat_ids_env:
-        chat_ids = [c.strip() for c in chat_ids_env.split(",") if c.strip()]
-    elif chat_id:
-        chat_ids = [chat_id]
+        additional_ids = [c.strip() for c in chat_ids_env.split(",") if c.strip()]
+        chat_ids.extend(additional_ids)
+    
+    # Add individual chat ID variables (TELEGRAM_CHAT_ID_2, TELEGRAM_CHAT_ID_3, etc.)
+    for i in range(2, 10):  # Support up to 9 additional groups
+        additional_id = _get_env(f"TELEGRAM_CHAT_ID_{i}")
+        if additional_id:
+            chat_ids.append(additional_id)
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_chat_ids = []
+    for cid in chat_ids:
+        if cid not in seen:
+            seen.add(cid)
+            unique_chat_ids.append(cid)
 
     return Settings(
         telegram_bot_token=_get_env("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=chat_id,
-        telegram_chat_ids=chat_ids,
+        telegram_chat_ids=unique_chat_ids,
         solana_rpc_url=_get_env("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"),
         solana_alt_rpc_url=_get_env("SOLANA_ALT_RPC_URL", ""),
         manual_price_file_path=_get_env("MANUAL_PRICE_FILE_PATH", "/data/manual_prices.json"),
